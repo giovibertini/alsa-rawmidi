@@ -3,9 +3,14 @@ module AlsaRawMIDI
   # Input device class
   class Input
 
+    FREQUENCY = 1.0 / 1000
+
     include Device
 
-    attr_reader :buffer
+    def buffer
+      fill_buffer
+      @buffer
+    end
 
     #
     # An array of MIDI event hashes as such:
@@ -20,10 +25,7 @@ module AlsaRawMIDI
     #
     # @return [Array<Hash>]
     def gets
-      loop until enqueued_messages?
-      msgs = enqueued_messages
-      @pointer = @buffer.length
-      msgs
+      buffer
     end
     alias_method :read, :gets
 
@@ -122,31 +124,28 @@ module AlsaRawMIDI
       }
     end
 
-    # The messages enqueued in the buffer
-    # @return [Array<Hash>]
-    def enqueued_messages
-      @buffer.slice(@pointer, @buffer.length - @pointer)
-    end
-
-    # Are there messages enqueued?
-    # @return [Boolean]
-    def enqueued_messages?
-      @pointer < @buffer.length
+    # Migrate new received messages from the callback queue to
+    # the buffer
+    def fill_buffer
+      messages = []
+      until @queue.empty?
+        messages << @queue.pop
+      end
+      @buffer += messages
+      @pointer = @buffer.length
+      messages
     end
 
     # Launch a background thread that collects messages
     # and holds them for the next call to gets*
     # @return [Thread]
     def spawn_listener
-      interval = 1.0/1000
       @listener = Thread.new do
         begin
           loop do
-            while (messages = API::Input.poll(@resource)).nil?
-              sleep(interval)
-            end
+            messages = API::Input.poll(@resource)
             unless messages.nil?
-              populate_buffer(messages, Time.now.to_f)
+              @queue << get_message_formatted(messages, timestamp)
             end
           end
         rescue Exception => exception
@@ -155,12 +154,6 @@ module AlsaRawMIDI
       end
       @listener.abort_on_exception = true
       @listener
-    end
-
-    # Collect messages from the system buffer
-    # @return [Array<String>, nil]
-    def populate_buffer(messages, timestamp)
-      @buffer << get_message_formatted(messages, timestamp)
     end
 
     # Convert a hex string to an array of numeric bytes eg "904040" -> [0x90, 0x40, 0x40]
